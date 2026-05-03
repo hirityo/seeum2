@@ -62,14 +62,13 @@ const INPUT_TYPES = [
 ];
 
 /* ═══════════════════════════════════
-   스토리지 키
+   스토리지
 ═══════════════════════════════════ */
 const LS_REC    = "seeum_rec_v3";
 const LS_USER   = "seeum_user_v3";
-const LS_TPW    = "seeum_teacher_pw";   // 교사 비밀번호 (변경 시 여기 저장)
-const LS_STPW   = "seeum_student_pws"; // 학생 비밀번호 맵 { studentId: pw }
+const LS_TPW    = "seeum_teacher_pw";
+const LS_STPW   = "seeum_student_pws";
 
-// 기본 교사 계정 (최초 비밀번호만 여기서 설정, 이후 앱 내 변경 가능)
 const DEFAULT_TEACHER = { id:"teacher1", name:"담임선생님", defaultPw:"seeum2025" };
 
 function getTeacherPw()    { return localStorage.getItem(LS_TPW) || DEFAULT_TEACHER.defaultPw; }
@@ -91,23 +90,19 @@ const todayStr = () => new Date().toISOString().slice(0,10);
 const getIT    = (id) => INPUT_TYPES.find(t=>t.id===id);
 const getCat   = (tid,cid) => getIT(tid)?.categories.find(c=>c.id===cid);
 
-/* ═══════════════════════════════════
-   Claude API
-═══════════════════════════════════ */
-async function callClaude(system, user) {
-  const res = await fetch("https://api.anthropic.com/v1/messages",{
-    method:"POST", headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({
-      model:"claude-sonnet-4-20250514", max_tokens:1000,
-      system, messages:[{role:"user",content:user}],
-    }),
-  });
-  const d = await res.json();
-  return d.content?.map(b=>b.text||"").join("") || "오류가 발생했습니다.";
-}
+// 클립보드 복사
+const copyText = (text) => {
+  if(navigator.clipboard) navigator.clipboard.writeText(text);
+  else {
+    const ta = document.createElement("textarea");
+    ta.value = text; document.body.appendChild(ta);
+    ta.select(); document.execCommand("copy");
+    document.body.removeChild(ta);
+  }
+};
 
 /* ═══════════════════════════════════
-   최상위 App
+   App
 ═══════════════════════════════════ */
 function App() {
   const [user,    setUser]    = useState(()=>loadUser());
@@ -120,7 +115,7 @@ function App() {
     setTimeout(()=>setToast(null), 2800);
   };
 
-  const login = (u) => { saveUser(u); setUser(u); setTab(u.role==="teacher"?"view":"write"); };
+  const login = (u) => { saveUser(u); setUser(u); setTab(u.role==="teacher"?"daily":"write"); };
   const logout = () => { saveUser(null); setUser(null); setTab("write"); };
 
   const addRecord = (rec) => {
@@ -132,14 +127,18 @@ function App() {
     const next = records.map(r=>r.id===id?{...r,...patch}:r);
     setRecords(next); saveRec(next);
   };
+  const deleteRecord = (id) => {
+    const next = records.filter(r=>r.id!==id);
+    setRecords(next); saveRec(next);
+    notify("기록을 삭제했습니다.");
+  };
 
   if(!user) return <LoginScreen onLogin={login}/>;
 
   const teacherTabs = [
-    {id:"view",     label:"기록 열람",   icon:"👁️"},
-    {id:"dash",     label:"대시보드",    icon:"📋"},
-    {id:"gen",      label:"생기부",      icon:"✨"},
-    {id:"settings", label:"설정",        icon:"⚙️"},
+    {id:"daily",     label:"날짜별",   icon:"📅"},
+    {id:"summary",   label:"학생별",   icon:"👤"},
+    {id:"settings",  label:"설정",     icon:"⚙️"},
   ];
   const studentTabs = [
     {id:"write",   label:"기록 쓰기", icon:"✏️"},
@@ -167,24 +166,20 @@ function App() {
         </button>
       </div>
 
-      {/* 토스트 */}
       {toast && (
         <div style={{position:"fixed",top:68,left:"50%",transform:"translateX(-50%)",zIndex:999,background:toast.type==="ok"?"#4CAF87":"#E74C6F",color:"#fff",padding:"11px 22px",borderRadius:40,fontSize:14,fontWeight:600,boxShadow:"0 4px 20px rgba(0,0,0,0.2)",whiteSpace:"nowrap"}}>
           {toast.msg}
         </div>
       )}
 
-      {/* 본문 */}
       <div style={{maxWidth:680,margin:"0 auto",padding:"20px 16px"}}>
         {user.role==="student" && tab==="write"    && <StudentWrite   user={user} onAdd={addRecord} />}
         {user.role==="student" && tab==="history"  && <StudentHistory user={user} records={records} />}
-        {user.role==="teacher" && tab==="view"     && <TeacherView    records={records} />}
-        {user.role==="teacher" && tab==="dash"     && <TeacherDash    records={records} onPatch={patchRecord} notify={notify} />}
-        {user.role==="teacher" && tab==="gen"      && <Generator      records={records} />}
+        {user.role==="teacher" && tab==="daily"    && <TeacherDaily   records={records} onPatch={patchRecord} onDelete={deleteRecord} notify={notify} />}
+        {user.role==="teacher" && tab==="summary"  && <TeacherSummary records={records} notify={notify} />}
         {user.role==="teacher" && tab==="settings" && <TeacherSettings notify={notify} onLogout={logout} />}
       </div>
 
-      {/* 하단 탭바 */}
       <div style={{position:"fixed",bottom:0,left:0,right:0,background:"#fff",borderTop:"1px solid #E4E8F5",display:"flex",zIndex:100,paddingBottom:"env(safe-area-inset-bottom)"}}>
         {tabs.map(t=>(
           <button key={t.id} onClick={()=>setTab(t.id)}
@@ -200,23 +195,17 @@ function App() {
 }
 
 /* ═══════════════════════════════════
-   로그인 화면
-   - 교사: 아이디 + 비밀번호 (힌트 없음)
-   - 학생: 학년/반/이름/번호 선택 후
-           최초 접속 시 비밀번호 설정,
-           재접속 시 비밀번호 확인
+   로그인
 ═══════════════════════════════════ */
 function LoginScreen({onLogin}) {
-  const [mode,  setMode]  = useState("choice"); // choice | student | teacher
-  // 학생
+  const [mode,  setMode]  = useState("choice");
   const [grade, setGrade] = useState("");
   const [cls,   setCls]   = useState("");
   const [name,  setName]  = useState("");
   const [num,   setNum]   = useState("");
   const [pw,    setPw]    = useState("");
-  const [pw2,   setPw2]   = useState("");  // 비밀번호 확인 (최초)
-  const [studentStep, setStudentStep] = useState(1); // 1:정보입력 2:비밀번호
-  // 교사
+  const [pw2,   setPw2]   = useState("");
+  const [studentStep, setStudentStep] = useState(1);
   const [tid,  setTid]  = useState("");
   const [tpw,  setTpw]  = useState("");
   const [err,  setErr]  = useState("");
@@ -232,13 +221,11 @@ function LoginScreen({onLogin}) {
   const goStudentLogin = () => {
     const storedPw = getStudentPw(sid);
     if(isNew) {
-      // 최초: 비밀번호 설정
       if(pw.length < 4){setErr("비밀번호를 4자리 이상 입력해 주세요.");return;}
       if(pw !== pw2){setErr("비밀번호가 일치하지 않습니다.");return;}
       setStudentPw(sid, pw);
       onLogin({role:"student",id:sid,name:name.trim(),grade,cls,num});
     } else {
-      // 재접속: 비밀번호 확인
       if(pw !== storedPw){setErr("비밀번호가 틀렸습니다.");return;}
       onLogin({role:"student",id:sid,name:name.trim(),grade,cls,num});
     }
@@ -265,14 +252,12 @@ function LoginScreen({onLogin}) {
   return (
     <div style={C.wrap}>
       <div style={C.card}>
-        {/* 로고 */}
         <div style={{textAlign:"center",marginBottom:28}}>
           <span style={{fontSize:40,color:"#4CAF87",display:"block",marginBottom:6}}>✦</span>
           <div style={{fontSize:30,fontWeight:900,color:"#1A1F3D",letterSpacing:"-1px"}}>세움</div>
-          <div style={{fontSize:13,color:"#8892B0",marginTop:4}}>학생 성장 기록 &amp; 생기부 자동화</div>
+          <div style={{fontSize:13,color:"#8892B0",marginTop:4}}>학생 성장 기록 누가관리</div>
         </div>
 
-        {/* 역할 선택 */}
         {mode==="choice" && (
           <div style={{display:"flex",gap:12}}>
             <button style={{flex:1,padding:"24px 12px",borderRadius:16,border:"2px solid #E4E8F5",background:"#F8F9FF",cursor:"pointer",display:"flex",flexDirection:"column",alignItems:"center",gap:8}}
@@ -285,12 +270,11 @@ function LoginScreen({onLogin}) {
               onClick={()=>{setMode("teacher");setErr("");}}>
               <span style={{fontSize:32}}>👩‍🏫</span>
               <strong style={{fontSize:15,color:"#1A1F3D"}}>교사</strong>
-              <span style={{fontSize:11,color:"#8892B0"}}>대시보드·생기부</span>
+              <span style={{fontSize:11,color:"#8892B0"}}>기록 관리</span>
             </button>
           </div>
         )}
 
-        {/* 학생 로그인 — 1단계: 정보 입력 */}
         {mode==="student" && studentStep===1 && (
           <>
             <button style={C.back} onClick={()=>{setMode("choice");setErr("");}}>← 뒤로</button>
@@ -314,12 +298,9 @@ function LoginScreen({onLogin}) {
           </>
         )}
 
-        {/* 학생 로그인 — 2단계: 비밀번호 */}
         {mode==="student" && studentStep===2 && (
           <>
             <button style={C.back} onClick={()=>{setStudentStep(1);setErr("");}}>← 뒤로</button>
-
-            {/* 학생 확인 카드 */}
             <div style={{background:"#F0F2FA",borderRadius:14,padding:"14px 18px",marginBottom:4,display:"flex",alignItems:"center",gap:12}}>
               <span style={{width:40,height:40,borderRadius:"50%",background:"linear-gradient(135deg,#4CAF87,#5B8DD9)",color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,fontWeight:700,flexShrink:0}}>{name[0]}</span>
               <div>
@@ -330,17 +311,14 @@ function LoginScreen({onLogin}) {
                 {isNew?"첫 접속":"재접속"}
               </span>
             </div>
-
             {isNew && (
               <div style={{background:"#FFF8E1",border:"1px solid #FDE68A",borderRadius:10,padding:"10px 14px",marginBottom:4,fontSize:12,color:"#78600A",lineHeight:1.5}}>
                 ⚠️ 처음 접속입니다. 비밀번호를 설정하세요.<br/>
-                <strong>이 비밀번호를 꼭 기억하세요!</strong> 다음에 로그인할 때 필요합니다.
+                <strong>이 비밀번호를 꼭 기억하세요!</strong>
               </div>
             )}
-
             <span style={C.lbl}>{isNew ? "새 비밀번호 설정" : "비밀번호 입력"}</span>
             <input type="password" placeholder={isNew?"4자리 이상":"비밀번호"} value={pw} onChange={e=>setPw(e.target.value)} style={C.inp}/>
-
             {isNew && (
               <>
                 <span style={C.lbl}>비밀번호 확인</span>
@@ -354,7 +332,6 @@ function LoginScreen({onLogin}) {
           </>
         )}
 
-        {/* 교사 로그인 */}
         {mode==="teacher" && (
           <>
             <button style={C.back} onClick={()=>{setMode("choice");setErr("");}}>← 뒤로</button>
@@ -405,7 +382,6 @@ function StudentWrite({user, onAdd}) {
           style={{border:"1.5px solid #E4E8F5",borderRadius:10,padding:"8px 10px",fontSize:13,color:"#1A1F3D",outline:"none"}}/>
       </div>
 
-      {/* STEP 1 — 유형 선택 */}
       {step===1 && (
         <div style={{display:"flex",flexDirection:"column",gap:14}}>
           {INPUT_TYPES.map(t=>(
@@ -421,7 +397,6 @@ function StudentWrite({user, onAdd}) {
         </div>
       )}
 
-      {/* STEP 2 — 카테고리 */}
       {step===2 && it && (
         <div>
           <button onClick={()=>setStep(1)} style={{background:"none",border:"none",color:"#8892B0",fontSize:13,cursor:"pointer",marginBottom:16,padding:0}}>← 유형 다시 선택</button>
@@ -440,7 +415,6 @@ function StudentWrite({user, onAdd}) {
         </div>
       )}
 
-      {/* STEP 3 — 내용 입력 */}
       {step===3 && it && (
         <div>
           <button onClick={()=>setStep(2)} style={{background:"none",border:"none",color:"#8892B0",fontSize:13,cursor:"pointer",marginBottom:16,padding:0}}>← 카테고리 다시 선택</button>
@@ -453,7 +427,7 @@ function StudentWrite({user, onAdd}) {
             style={{width:"100%",border:"1.5px solid #E4E8F5",borderRadius:14,padding:"14px 16px",fontSize:14,lineHeight:1.8,outline:"none",resize:"vertical",color:"#1A1F3D"}}/>
           <div style={{textAlign:"right",fontSize:12,color:"#B0BAD0",marginTop:4,marginBottom:16}}>{content.length}자</div>
           <button onClick={submit} disabled={!content.trim()}
-            style={{width:"100%",padding:16,borderRadius:14,background:content.trim()?it.color:"#E4E8F5",color:"#fff",border:"none",fontSize:16,fontWeight:700,cursor:content.trim()?"pointer":"default",transition:"background 0.2s"}}>
+            style={{width:"100%",padding:16,borderRadius:14,background:content.trim()?it.color:"#E4E8F5",color:"#fff",border:"none",fontSize:16,fontWeight:700,cursor:content.trim()?"pointer":"default"}}>
             기록 저장하기 ✦
           </button>
         </div>
@@ -510,43 +484,12 @@ function StudentHistory({user, records}) {
 }
 
 /* ═══════════════════════════════════
-   교사 — 기록 열람
+   교사 — 날짜별 누가기록
 ═══════════════════════════════════ */
-function TeacherView({records}) {
-  const [fg,setFg]=useState("전체"); const [fc,setFc]=useState("전체"); const [ft,setFt]=useState("all");
-  const list = records.filter(r=>{
-    if(fg!=="전체"&&r.grade!==fg) return false;
-    if(fc!=="전체"&&r.cls!==fc)   return false;
-    if(ft!=="all"&&r.inputType!==ft) return false;
-    return true;
-  }).sort((a,b)=>b.date.localeCompare(a.date));
-
-  return (
-    <div>
-      <div style={{fontSize:20,fontWeight:900,color:"#1A1F3D",marginBottom:16}}>학생 기록 열람</div>
-      <Filters fg={fg} setFg={setFg} fc={fc} setFc={setFc} ft={ft} setFt={setFt}/>
-      <div style={{fontSize:13,color:"#8892B0",marginBottom:14}}>총 {list.length}건</div>
-      {list.length===0 && <Empty/>}
-      {list.map(r=><RecordCard key={r.id} r={r} showStudent/>)}
-    </div>
-  );
-}
-
-/* ═══════════════════════════════════
-   교사 — 대시보드
-═══════════════════════════════════ */
-function TeacherDash({records, onPatch, notify}) {
+function TeacherDaily({records, onPatch, onDelete, notify}) {
   const [fg,setFg]=useState("전체"); const [fc,setFc]=useState("전체"); const [ft,setFt]=useState("all");
   const [fbTarget,setFbTarget]=useState(null); const [fbText,setFbText]=useState("");
 
-  const stats={};
-  records.forEach(r=>{
-    const k=`${r.grade} ${r.cls}`;
-    if(!stats[k]) stats[k]={total:0,starred:0,students:new Set()};
-    stats[k].total++; if(r.starred) stats[k].starred++;
-    stats[k].students.add(r.studentId);
-  });
-
   const list = records.filter(r=>{
     if(fg!=="전체"&&r.grade!==fg) return false;
     if(fc!=="전체"&&r.cls!==fc)   return false;
@@ -554,127 +497,159 @@ function TeacherDash({records, onPatch, notify}) {
     return true;
   }).sort((a,b)=>b.date.localeCompare(a.date));
 
-  const saveFb=(id)=>{onPatch(id,{feedback:fbText});setFbTarget(null);setFbText("");notify("피드백 저장!");};
+  // 날짜별 그룹화
+  const byDate = {};
+  list.forEach(r=>{
+    if(!byDate[r.date]) byDate[r.date]=[];
+    byDate[r.date].push(r);
+  });
+  const dates = Object.keys(byDate).sort((a,b)=>b.localeCompare(a));
+
+  const saveFb = (id) => { onPatch(id,{feedback:fbText}); setFbTarget(null); setFbText(""); notify("피드백 저장!"); };
+  const removeRec = (id) => {
+    if(window.confirm("이 기록을 삭제하시겠습니까?\n삭제된 기록은 복구할 수 없습니다.")) onDelete(id);
+  };
+
+  // 통계
+  const totalCount = records.length;
+  const studentSet = new Set(records.map(r=>r.studentId));
+  const dateCount = new Set(records.map(r=>r.date)).size;
 
   return (
     <div>
-      <div style={{fontSize:20,fontWeight:900,color:"#1A1F3D",marginBottom:16}}>교사 대시보드</div>
-      <div style={{display:"flex",flexWrap:"wrap",gap:10,marginBottom:20}}>
-        {Object.entries(stats).map(([k,v])=>(
-          <div key={k} style={{background:"#fff",borderRadius:14,padding:"14px 18px",boxShadow:"0 2px 8px rgba(0,0,0,0.06)",minWidth:130}}>
-            <div style={{fontSize:15,fontWeight:800,color:"#1A1F3D",marginBottom:6}}>{k}</div>
-            <div style={{display:"flex",flexDirection:"column",gap:3,fontSize:13,color:"#8892B0"}}>
-              <span>👥 학생 {v.students.size}명</span>
-              <span>📄 기록 {v.total}건</span>
-              <span>⭐ 별표 {v.starred}건</span>
-            </div>
-          </div>
-        ))}
-        {Object.keys(stats).length===0 && <p style={{color:"#B0BAD0",fontSize:14}}>아직 기록이 없습니다.</p>}
+      <div style={{fontSize:20,fontWeight:900,color:"#1A1F3D",marginBottom:4}}>📅 날짜별 누가기록</div>
+      <div style={{fontSize:13,color:"#8892B0",marginBottom:16}}>학생들이 작성한 기록을 날짜별로 모아 봅니다</div>
+
+      {/* 통계 */}
+      <div style={{display:"flex",gap:8,marginBottom:16}}>
+        <div style={{flex:1,background:"#fff",borderRadius:12,padding:"12px 14px",textAlign:"center",boxShadow:"0 2px 8px rgba(0,0,0,0.05)"}}>
+          <div style={{fontSize:11,color:"#8892B0",fontWeight:600}}>전체 기록</div>
+          <div style={{fontSize:20,fontWeight:900,color:"#1A1F3D",marginTop:2}}>{totalCount}건</div>
+        </div>
+        <div style={{flex:1,background:"#fff",borderRadius:12,padding:"12px 14px",textAlign:"center",boxShadow:"0 2px 8px rgba(0,0,0,0.05)"}}>
+          <div style={{fontSize:11,color:"#8892B0",fontWeight:600}}>참여 학생</div>
+          <div style={{fontSize:20,fontWeight:900,color:"#4CAF87",marginTop:2}}>{studentSet.size}명</div>
+        </div>
+        <div style={{flex:1,background:"#fff",borderRadius:12,padding:"12px 14px",textAlign:"center",boxShadow:"0 2px 8px rgba(0,0,0,0.05)"}}>
+          <div style={{fontSize:11,color:"#8892B0",fontWeight:600}}>기록 날짜</div>
+          <div style={{fontSize:20,fontWeight:900,color:"#5B8DD9",marginTop:2}}>{dateCount}일</div>
+        </div>
       </div>
+
       <Filters fg={fg} setFg={setFg} fc={fc} setFc={setFc} ft={ft} setFt={setFt}/>
-      {list.length===0 && <Empty/>}
-      {list.map(r=>{
-        const it=getIT(r.inputType); const c=getCat(r.inputType,r.category);
-        return (
-          <div key={r.id} style={{background:"#fff",borderRadius:16,padding:"16px 18px",marginBottom:12,borderLeft:`4px solid ${it?.color||"#ccc"}`,boxShadow:"0 2px 8px rgba(0,0,0,0.05)"}}>
-            <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",marginBottom:8}}>
-              <span style={{background:"#F0F2FA",color:"#1A1F3D",borderRadius:20,padding:"3px 10px",fontSize:12,fontWeight:700}}>{r.grade} {r.cls} {r.num}번 {r.studentName}</span>
-              <span style={{background:it?.color+"20",color:it?.color,borderRadius:20,padding:"3px 10px",fontSize:12,fontWeight:700}}>{it?.emoji} {it?.short}</span>
-              <span style={{background:"#F0F2FA",color:"#5B8DD9",borderRadius:20,padding:"3px 10px",fontSize:12}}>{c?.emoji} {c?.label}</span>
-              <span style={{color:"#B0BAD0",fontSize:12}}>{r.date}</span>
-              <button onClick={()=>onPatch(r.id,{starred:!r.starred})}
-                style={{background:"none",border:"none",fontSize:20,cursor:"pointer",marginLeft:"auto",color:r.starred?"#F4C430":"#DDD"}}>
-                {r.starred?"⭐":"☆"}
-              </button>
-            </div>
-            <p style={{fontSize:14,color:"#3A4060",lineHeight:1.7,margin:"0 0 10px"}}>{r.content}</p>
-            {r.feedback && (
-              <div style={{background:"#F0FFF8",border:"1px solid #A8E6CB",borderRadius:10,padding:"8px 14px",fontSize:13,color:"#2D6A4F",marginBottom:8}}>
-                💬 피드백: {r.feedback}
-              </div>
-            )}
-            {fbTarget===r.id
-              ? <div>
-                  <textarea value={fbText} onChange={e=>setFbText(e.target.value)} rows={2}
-                    placeholder="피드백을 입력하세요..."
-                    style={{width:"100%",border:"1.5px solid #E4E8F5",borderRadius:10,padding:"10px 14px",fontSize:13,lineHeight:1.6,outline:"none",resize:"none"}}/>
-                  <div style={{display:"flex",gap:8,marginTop:8}}>
-                    <button onClick={()=>saveFb(r.id)} style={{padding:"8px 20px",borderRadius:10,background:"#1A1F3D",color:"#fff",border:"none",fontSize:13,fontWeight:600,cursor:"pointer"}}>저장</button>
-                    <button onClick={()=>setFbTarget(null)} style={{padding:"8px 16px",borderRadius:10,background:"#F0F2FA",color:"#8892B0",border:"none",fontSize:13,cursor:"pointer"}}>취소</button>
-                  </div>
-                </div>
-              : <button onClick={()=>{setFbTarget(r.id);setFbText(r.feedback||"");}}
-                  style={{background:"none",border:"1.5px dashed #E4E8F5",borderRadius:10,padding:"6px 14px",fontSize:12,color:"#8892B0",cursor:"pointer"}}>
-                  + 피드백 {r.feedback?"수정":"추가"}
-                </button>
-            }
+
+      {dates.length===0 && <Empty/>}
+
+      {dates.map(date=>(
+        <div key={date} style={{marginBottom:24}}>
+          {/* 날짜 헤더 */}
+          <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10,padding:"6px 0",borderBottom:"2px solid #1A1F3D"}}>
+            <span style={{fontSize:16,fontWeight:900,color:"#1A1F3D"}}>📅 {date}</span>
+            <span style={{fontSize:12,background:"#1A1F3D",color:"#fff",borderRadius:20,padding:"2px 10px",fontWeight:700}}>{byDate[date].length}건</span>
+            <span style={{fontSize:11,color:"#8892B0",marginLeft:"auto"}}>{getDayLabel(date)}</span>
           </div>
-        );
-      })}
+
+          {byDate[date].map(r=>{
+            const it=getIT(r.inputType); const c=getCat(r.inputType,r.category);
+            return (
+              <div key={r.id} style={{background:"#fff",borderRadius:14,padding:"14px 16px",marginBottom:8,borderLeft:`4px solid ${it?.color||"#ccc"}`,boxShadow:"0 2px 6px rgba(0,0,0,0.04)"}}>
+                <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap",marginBottom:8}}>
+                  <span style={{background:"#F0F2FA",color:"#1A1F3D",borderRadius:20,padding:"3px 10px",fontSize:12,fontWeight:700}}>{r.grade} {r.cls} {r.num}번 {r.studentName}</span>
+                  <span style={{background:it?.color+"20",color:it?.color,borderRadius:20,padding:"3px 10px",fontSize:11,fontWeight:700}}>{it?.emoji} {it?.short}</span>
+                  <span style={{background:"#F8F9FF",color:"#5B8DD9",borderRadius:20,padding:"3px 10px",fontSize:11}}>{c?.emoji} {c?.label}</span>
+                  <button onClick={()=>onPatch(r.id,{starred:!r.starred})}
+                    style={{background:"none",border:"none",fontSize:18,cursor:"pointer",marginLeft:"auto",color:r.starred?"#F4C430":"#DDD",padding:0}}>
+                    {r.starred?"⭐":"☆"}
+                  </button>
+                  <button onClick={()=>removeRec(r.id)}
+                    style={{background:"none",border:"none",fontSize:14,cursor:"pointer",color:"#E74C6F",padding:"2px 4px"}}>🗑️</button>
+                </div>
+                <p style={{fontSize:14,color:"#3A4060",lineHeight:1.7,margin:"0 0 8px"}}>{r.content}</p>
+
+                {r.feedback && (
+                  <div style={{background:"#F0FFF8",border:"1px solid #A8E6CB",borderRadius:8,padding:"6px 12px",fontSize:12,color:"#2D6A4F",marginBottom:8}}>
+                    💬 {r.feedback}
+                  </div>
+                )}
+                {fbTarget===r.id
+                  ? <div>
+                      <textarea value={fbText} onChange={e=>setFbText(e.target.value)} rows={2}
+                        placeholder="피드백 입력..."
+                        style={{width:"100%",border:"1.5px solid #E4E8F5",borderRadius:8,padding:"8px 12px",fontSize:13,lineHeight:1.5,outline:"none",resize:"none"}}/>
+                      <div style={{display:"flex",gap:6,marginTop:6}}>
+                        <button onClick={()=>saveFb(r.id)} style={{padding:"6px 16px",borderRadius:8,background:"#1A1F3D",color:"#fff",border:"none",fontSize:12,fontWeight:600,cursor:"pointer"}}>저장</button>
+                        <button onClick={()=>setFbTarget(null)} style={{padding:"6px 14px",borderRadius:8,background:"#F0F2FA",color:"#8892B0",border:"none",fontSize:12,cursor:"pointer"}}>취소</button>
+                      </div>
+                    </div>
+                  : <button onClick={()=>{setFbTarget(r.id);setFbText(r.feedback||"");}}
+                      style={{background:"none",border:"1px dashed #E4E8F5",borderRadius:8,padding:"4px 12px",fontSize:11,color:"#8892B0",cursor:"pointer"}}>
+                      + 피드백 {r.feedback?"수정":"추가"}
+                    </button>
+                }
+              </div>
+            );
+          })}
+        </div>
+      ))}
     </div>
   );
 }
 
 /* ═══════════════════════════════════
-   교사 — 생기부 생성기
+   교사 — 학생별 통합기록 (생기부 작성용)
 ═══════════════════════════════════ */
-function Generator({records}) {
+function TeacherSummary({records, notify}) {
   const [fg,setFg]=useState("전체"); const [fc,setFc]=useState("전체");
   const [sid,setSid]=useState(null);
   const [dtype,setDtype]=useState("math");
-  const [tlen,setTlen]=useState(500);
-  const [kw,setKw]=useState("");
-  const [loading,setLoading]=useState(false);
-  const [analysis,setAnalysis]=useState("");
-  const [draft,setDraft]=useState("");
-  const [phase,setPhase]=useState("idle");
 
+  // 학생 목록
   const stuMap={};
   records.forEach(r=>{
     const pass=(fg==="전체"||r.grade===fg)&&(fc==="전체"||r.cls===fc);
     if(pass&&!stuMap[r.studentId]) stuMap[r.studentId]={...r,cnt:0};
     if(pass&&stuMap[r.studentId])  stuMap[r.studentId].cnt++;
   });
-  const stus=Object.values(stuMap);
+  const stus=Object.values(stuMap).sort((a,b)=>{
+    if(a.grade!==b.grade) return a.grade.localeCompare(b.grade);
+    if(a.cls!==b.cls) return a.cls.localeCompare(b.cls);
+    return Number(a.num)-Number(b.num);
+  });
   const selStu=stus.find(s=>s.studentId===sid);
-  const useRecs=records.filter(r=>r.studentId===sid&&r.inputType===dtype);
+  const useRecs=records.filter(r=>r.studentId===sid&&r.inputType===dtype).sort((a,b)=>a.date.localeCompare(b.date));
 
-  const SYS=`당신은 대한민국 중학교 학교생활기록부(생기부) 작성 전문가입니다.
-교육부 학교생활기록부 작성 지침을 준수하며 ~함, ~임, ~됨 체를 사용합니다.
-학생의 실제 기록된 행동만 근거로 작성하며 과장하지 않습니다.`;
-
-  const doAnalyze=async()=>{
-    setLoading(true);setAnalysis("");setDraft("");
-    const text=useRecs.map(r=>`[${r.date}] ${getCat(r.inputType,r.category)?.label} | ${r.content}`).join("\n");
-    const tLabel=dtype==="math"?"수학 세부능력 및 특기사항":"행동특성 및 종합의견";
-    const res=await callClaude(SYS,`다음은 ${selStu?.studentName} 학생(${selStu?.grade} ${selStu?.cls})의 ${tLabel} 관련 기록입니다:\n\n${text}\n\n위 기록을 분석하여 핵심 성과 3가지를 요약해 주세요.${kw?` 특히 '${kw}' 키워드를 중심으로 분석해 주세요.`:""}`);
-    setAnalysis(res);setPhase("analyzed");setLoading(false);
+  // 통합 텍스트 생성 (AI에 붙여넣기 좋게)
+  const buildCombinedText = () => {
+    if(!selStu) return "";
+    const tLabel = dtype==="math" ? "수학 세부능력 및 특기사항" : "행동특성 및 종합의견";
+    const header = `[${selStu.grade} ${selStu.cls} ${selStu.num}번 ${selStu.studentName}] ${tLabel} 기록\n총 ${useRecs.length}건\n${"=".repeat(40)}\n`;
+    const body = useRecs.map((r,i)=>{
+      const c = getCat(r.inputType,r.category);
+      return `${i+1}. [${r.date}] ${c?.label}\n   ${r.content}${r.feedback?`\n   (선생님 피드백: ${r.feedback})`:""}`;
+    }).join("\n\n");
+    return header + body;
   };
 
-  const doDraft=async()=>{
-    setLoading(true);setDraft("");
-    const prompt=dtype==="math"
-      ?`다음 분석 요약을 바탕으로 중학교 수학과 '세부능력 및 특기사항' 항목에 들어갈 ${tlen}자 내외의 문장을 작성해 주세요.\n\n요약:\n${analysis}\n\n~함, ~임 체를 사용하고 교육부 가이드라인을 준수하며 3인칭으로 작성하세요.`
-      :`다음 분석 요약을 바탕으로 중학교 '행동특성 및 종합의견' 항목에 들어갈 ${tlen}자 내외의 문장을 작성해 주세요.\n\n요약:\n${analysis}\n\n~함, ~임 체를 사용하고 교육부 가이드라인을 준수하며 3인칭으로 작성하세요.`;
-    const res=await callClaude(SYS,prompt);
-    setDraft(res);setPhase("drafted");setLoading(false);
-  };
+  const combinedText = buildCombinedText();
 
-  const reset=()=>{setAnalysis("");setDraft("");setPhase("idle");};
   const SEL2={border:"1.5px solid #E4E8F5",borderRadius:10,padding:"10px 12px",fontSize:14,color:"#1A1F3D",background:"#fff",outline:"none",flex:1};
+
+  const handleCopy = () => {
+    copyText(combinedText);
+    notify("기록이 복사되었습니다! 📋");
+  };
 
   return (
     <div>
-      <div style={{fontSize:20,fontWeight:900,color:"#1A1F3D",marginBottom:4}}>✨ 생기부 생성기</div>
-      <div style={{fontSize:13,color:"#8892B0",marginBottom:20}}>학생 기록 → AI가 생기부 문체로 자동 변환</div>
+      <div style={{fontSize:20,fontWeight:900,color:"#1A1F3D",marginBottom:4}}>👤 학생별 통합기록</div>
+      <div style={{fontSize:13,color:"#8892B0",marginBottom:20}}>학생별로 누적 기록을 모아서 봅니다 (생기부 작성용)</div>
 
       <Sec label="① 반 선택">
         <div style={{display:"flex",gap:10}}>
-          <select value={fg} onChange={e=>{setFg(e.target.value);setSid(null);reset();}} style={SEL2}>
+          <select value={fg} onChange={e=>{setFg(e.target.value);setSid(null);}} style={SEL2}>
             <option>전체</option>{GRADES.map(g=><option key={g}>{g}</option>)}
           </select>
-          <select value={fc} onChange={e=>{setFc(e.target.value);setSid(null);reset();}} style={SEL2}>
+          <select value={fc} onChange={e=>{setFc(e.target.value);setSid(null);}} style={SEL2}>
             <option>전체</option>{CLASSES.map(c=><option key={c}>{c}</option>)}
           </select>
         </div>
@@ -682,111 +657,110 @@ function Generator({records}) {
 
       <Sec label="② 학생 선택">
         {stus.length===0
-          ?<p style={{color:"#B0BAD0",fontSize:13}}>해당 반의 기록이 없습니다.</p>
-          :<div style={{display:"flex",flexWrap:"wrap",gap:10}}>
-            {stus.map(s=>(
-              <button key={s.studentId} onClick={()=>{setSid(s.studentId);reset();}}
-                style={{display:"flex",flexDirection:"column",alignItems:"center",gap:4,padding:"12px 16px",borderRadius:14,border:`2px solid ${sid===s.studentId?"#1A1F3D":"#E4E8F5"}`,background:sid===s.studentId?"#F0F2FA":"#F8F9FF",cursor:"pointer",minWidth:90}}>
-                <span style={{width:34,height:34,borderRadius:"50%",background:"linear-gradient(135deg,#4CAF87,#5B8DD9)",color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",fontSize:15,fontWeight:700}}>{s.studentName?.[0]}</span>
-                <span style={{fontSize:14,fontWeight:700,color:"#1A1F3D"}}>{s.studentName}</span>
-                <span style={{fontSize:11,color:"#8892B0"}}>{s.grade} {s.cls} {s.num}번</span>
-              </button>
-            ))}
-          </div>
+          ? <p style={{color:"#B0BAD0",fontSize:13}}>해당 반의 기록이 없습니다.</p>
+          : <div style={{display:"flex",flexWrap:"wrap",gap:8}}>
+              {stus.map(s=>(
+                <button key={s.studentId} onClick={()=>setSid(s.studentId)}
+                  style={{display:"flex",flexDirection:"column",alignItems:"center",gap:3,padding:"10px 14px",borderRadius:12,border:`2px solid ${sid===s.studentId?"#1A1F3D":"#E4E8F5"}`,background:sid===s.studentId?"#F0F2FA":"#fff",cursor:"pointer",minWidth:80}}>
+                  <span style={{width:30,height:30,borderRadius:"50%",background:"linear-gradient(135deg,#4CAF87,#5B8DD9)",color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,fontWeight:700}}>{s.studentName?.[0]}</span>
+                  <span style={{fontSize:13,fontWeight:700,color:"#1A1F3D"}}>{s.studentName}</span>
+                  <span style={{fontSize:10,color:"#8892B0"}}>{s.grade.replace("학년","")}-{s.cls.replace("반","")} {s.num}번</span>
+                  <span style={{fontSize:10,color:"#5B8DD9",fontWeight:600}}>{s.cnt}건</span>
+                </button>
+              ))}
+            </div>
         }
       </Sec>
 
-      {sid&&(<>
-        <Sec label="③ 생기부 종류">
-          <div style={{display:"flex",flexDirection:"column",gap:10}}>
-            {INPUT_TYPES.map(t=>(
-              <button key={t.id} onClick={()=>{setDtype(t.id);reset();}}
-                style={{padding:"14px 18px",borderRadius:14,border:`2px solid ${t.color}`,background:dtype===t.id?t.color:"transparent",color:dtype===t.id?"#fff":t.color,fontWeight:700,fontSize:14,cursor:"pointer",textAlign:"left",display:"flex",alignItems:"center",gap:10}}>
-                <span style={{fontSize:22}}>{t.emoji}</span>{t.label}
-              </button>
-            ))}
-          </div>
-          <p style={{fontSize:12,color:"#B0BAD0",marginTop:8}}>사용될 기록: {useRecs.length}건</p>
-        </Sec>
-
-        <Sec label="④ 옵션">
-          <div style={{display:"flex",gap:8,marginBottom:12}}>
-            {[300,500,700].map(l=>(
-              <button key={l} onClick={()=>setTlen(l)}
-                style={{flex:1,padding:"10px",borderRadius:10,border:`1.5px solid ${tlen===l?"#5B8DD9":"#E4E8F5"}`,background:tlen===l?"#EBF2FF":"#F8F9FF",color:tlen===l?"#5B8DD9":"#8892B0",fontWeight:600,fontSize:13,cursor:"pointer"}}>
-                {l}자
-              </button>
-            ))}
-          </div>
-          <input placeholder="강조 키워드 (예: 논리적 사고, 협력)" value={kw} onChange={e=>setKw(e.target.value)}
-            style={{width:"100%",border:"1.5px solid #E4E8F5",borderRadius:10,padding:"11px 14px",fontSize:13,color:"#1A1F3D",outline:"none"}}/>
-        </Sec>
-
-        {useRecs.length>0&&(
-          <div style={{background:"#F8F9FF",borderRadius:14,padding:16,marginBottom:20}}>
-            <p style={{fontSize:12,fontWeight:700,color:"#8892B0",margin:"0 0 10px"}}>📄 사용될 기록 ({useRecs.length}건)</p>
-            {useRecs.slice(0,3).map(r=>{
-              const it=getIT(r.inputType);const c=getCat(r.inputType,r.category);
-              return(
-                <div key={r.id} style={{borderBottom:"1px solid #E4E8F5",paddingBottom:8,marginBottom:8}}>
-                  <span style={{fontSize:12,color:it?.color,fontWeight:600}}>{c?.emoji} {c?.label}</span>
-                  <span style={{fontSize:11,color:"#B0BAD0",marginLeft:8}}>{r.date}</span>
-                  <p style={{fontSize:12,color:"#3A4060",margin:"4px 0 0",lineHeight:1.5}}>{r.content.slice(0,70)}{r.content.length>70?"...":""}</p>
-                </div>
+      {sid && (<>
+        <Sec label="③ 기록 종류">
+          <div style={{display:"flex",gap:10}}>
+            {INPUT_TYPES.map(t=>{
+              const cnt = records.filter(r=>r.studentId===sid&&r.inputType===t.id).length;
+              return (
+                <button key={t.id} onClick={()=>setDtype(t.id)}
+                  style={{flex:1,padding:"12px",borderRadius:12,border:`2px solid ${t.color}`,background:dtype===t.id?t.color:"transparent",color:dtype===t.id?"#fff":t.color,fontWeight:700,fontSize:13,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",gap:6}}>
+                  <span style={{fontSize:18}}>{t.emoji}</span>
+                  <div style={{textAlign:"left"}}>
+                    <div>{t.short}</div>
+                    <div style={{fontSize:10,fontWeight:400,opacity:0.8}}>{cnt}건</div>
+                  </div>
+                </button>
               );
             })}
-            {useRecs.length>3&&<p style={{fontSize:12,color:"#B0BAD0",textAlign:"center",margin:0}}>+{useRecs.length-3}건 더</p>}
           </div>
-        )}
+        </Sec>
 
+        {/* 통합 결과 */}
         {useRecs.length===0
-          ?<div style={{background:"#FFF5F5",border:"1.5px solid #FCA5A5",borderRadius:14,padding:"14px 18px",fontSize:13,color:"#B91C1C",textAlign:"center",marginBottom:20}}>이 유형의 기록이 없습니다. 학생이 먼저 기록을 작성해야 합니다.</div>
-          :<div style={{display:"flex",gap:10,marginBottom:20}}>
-            {phase==="idle"&&(
-              <button onClick={doAnalyze} disabled={loading}
-                style={{flex:1,padding:16,borderRadius:14,background:"linear-gradient(135deg,#4CAF87,#5B8DD9)",color:"#fff",border:"none",fontSize:15,fontWeight:700,cursor:loading?"not-allowed":"pointer",opacity:loading?0.7:1}}>
-                {loading?"🔄 분석 중...":"1단계: 기록 분석하기"}
-              </button>
-            )}
-            {phase==="analyzed"&&(<>
-              <button onClick={doDraft} disabled={loading}
-                style={{flex:1,padding:16,borderRadius:14,background:"linear-gradient(135deg,#4CAF87,#5B8DD9)",color:"#fff",border:"none",fontSize:15,fontWeight:700,cursor:loading?"not-allowed":"pointer",opacity:loading?0.7:1}}>
-                {loading?"🔄 생성 중...":"2단계: 생기부 초안 작성"}
-              </button>
-              <button onClick={reset} style={{padding:"16px 18px",borderRadius:14,background:"#F0F2FA",color:"#8892B0",border:"none",fontSize:14,fontWeight:600,cursor:"pointer"}}>↩</button>
-            </>)}
-            {phase==="drafted"&&(
-              <button onClick={reset} style={{flex:1,padding:16,borderRadius:14,background:"#F0F2FA",color:"#8892B0",border:"none",fontSize:14,fontWeight:600,cursor:"pointer"}}>다시 생성하기</button>
-            )}
-          </div>
-        }
+          ? <div style={{background:"#FFF5F5",border:"1.5px solid #FCA5A5",borderRadius:14,padding:"20px",fontSize:13,color:"#B91C1C",textAlign:"center"}}>
+              📭 이 유형의 기록이 없습니다.
+            </div>
+          : <>
+              {/* 통합 미리보기 카드 */}
+              <div style={{background:"#fff",borderRadius:16,padding:"20px",boxShadow:"0 2px 12px rgba(0,0,0,0.06)",marginBottom:16}}>
+                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14}}>
+                  <div>
+                    <div style={{fontSize:16,fontWeight:800,color:"#1A1F3D"}}>
+                      {selStu?.studentName} 학생 통합 기록
+                    </div>
+                    <div style={{fontSize:12,color:"#8892B0",marginTop:2}}>
+                      {selStu?.grade} {selStu?.cls} {selStu?.num}번 · {getIT(dtype)?.short} {useRecs.length}건
+                    </div>
+                  </div>
+                  <button onClick={handleCopy}
+                    style={{padding:"10px 18px",borderRadius:10,background:"#1A1F3D",color:"#fff",border:"none",fontSize:13,fontWeight:700,cursor:"pointer",display:"flex",alignItems:"center",gap:6}}>
+                    📋 전체 복사
+                  </button>
+                </div>
 
-        {analysis&&(
-          <div style={{background:"#EBF4FF",border:"1.5px solid #93C5FD",borderRadius:16,padding:18,marginBottom:14}}>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
-              <span style={{fontSize:13,fontWeight:700,color:"#1D4ED8"}}>📊 1단계: 분석 결과</span>
-              <button onClick={()=>navigator.clipboard.writeText(analysis)} style={{padding:"5px 12px",borderRadius:8,background:"#1D4ED8",color:"#fff",border:"none",fontSize:12,cursor:"pointer"}}>복사</button>
-            </div>
-            <pre style={{fontSize:13,color:"#1A1F3D",lineHeight:1.8,whiteSpace:"pre-wrap",margin:0,fontFamily:"Noto Sans KR,sans-serif"}}>{analysis}</pre>
-          </div>
-        )}
-        {draft&&(
-          <div style={{background:"#F0FFF8",border:"1.5px solid #6EE7B7",borderRadius:16,padding:18}}>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
-              <span style={{fontSize:13,fontWeight:700,color:"#065F46"}}>✅ 최종 생기부 초안</span>
-              <button onClick={()=>navigator.clipboard.writeText(draft)} style={{padding:"5px 12px",borderRadius:8,background:"#065F46",color:"#fff",border:"none",fontSize:12,cursor:"pointer"}}>복사</button>
-            </div>
-            <pre style={{fontSize:14,color:"#1A1F3D",lineHeight:1.9,whiteSpace:"pre-wrap",margin:0,fontFamily:"Noto Sans KR,sans-serif"}}>{draft}</pre>
-            <div style={{textAlign:"right",fontSize:12,color:"#065F46",marginTop:10,fontWeight:700}}>총 {draft.length}자 (목표 {tlen}자)</div>
-          </div>
-        )}
+                {/* 누적 기록 리스트 */}
+                <div style={{maxHeight:400,overflowY:"auto",background:"#F8F9FF",borderRadius:10,padding:14}}>
+                  {useRecs.map((r,i)=>{
+                    const c = getCat(r.inputType,r.category);
+                    return (
+                      <div key={r.id} style={{paddingBottom:12,marginBottom:12,borderBottom:i<useRecs.length-1?"1px solid #E4E8F5":"none"}}>
+                        <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:4,flexWrap:"wrap"}}>
+                          <span style={{fontSize:12,fontWeight:700,color:"#1A1F3D"}}>{i+1}.</span>
+                          <span style={{fontSize:11,color:"#5B8DD9",background:"#EBF2FF",borderRadius:20,padding:"1px 8px",fontWeight:600}}>{r.date}</span>
+                          <span style={{fontSize:11,color:getIT(r.inputType)?.color}}>{c?.emoji} {c?.label}</span>
+                        </div>
+                        <p style={{fontSize:13,color:"#3A4060",lineHeight:1.7,margin:0}}>{r.content}</p>
+                        {r.feedback && (
+                          <div style={{marginTop:6,fontSize:12,color:"#2D6A4F",background:"#F0FFF8",padding:"4px 10px",borderRadius:6,fontStyle:"italic"}}>
+                            💬 {r.feedback}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* AI 활용 안내 */}
+              <div style={{background:"#FFFBEB",border:"1.5px solid #FDE68A",borderRadius:14,padding:"16px 18px"}}>
+                <div style={{fontSize:14,fontWeight:700,color:"#78600A",marginBottom:8}}>
+                  💡 생기부 작성에 활용하기
+                </div>
+                <p style={{margin:"0 0 10px",fontSize:13,color:"#78600A",lineHeight:1.7}}>
+                  <strong>📋 전체 복사</strong> 버튼을 눌러서 ChatGPT, Claude, Gemini 등 AI에 붙여넣고 아래처럼 요청하세요:
+                </p>
+                <div style={{background:"#fff",borderRadius:10,padding:"12px 14px",fontSize:12,color:"#3A4060",lineHeight:1.7,fontFamily:"monospace"}}>
+                  {dtype==="math"
+                    ? <>위 기록을 바탕으로 학교생활기록부 <strong>'수학 세부능력 및 특기사항'</strong> 항목에 들어갈 500자 내외의 문장을 작성해 줘. ~함, ~임 체로 교육부 가이드라인에 맞게 작성해 줘.</>
+                    : <>위 기록을 바탕으로 학교생활기록부 <strong>'행동특성 및 종합의견'</strong> 항목에 들어갈 500자 내외의 문장을 작성해 줘. ~함, ~임 체로 교육부 가이드라인에 맞게 작성해 줘.</>
+                  }
+                </div>
+              </div>
+            </>
+        }
       </>)}
     </div>
   );
 }
 
 /* ═══════════════════════════════════
-   교사 — 설정 (비밀번호 변경)
+   교사 — 설정
 ═══════════════════════════════════ */
 function TeacherSettings({notify, onLogout}) {
   const [curPw,  setCurPw]  = useState("");
@@ -797,13 +771,13 @@ function TeacherSettings({notify, onLogout}) {
 
   const change = () => {
     setErr("");
-    if(curPw !== getTeacherPw())        { setErr("현재 비밀번호가 틀렸습니다."); return; }
-    if(newPw.length < 6)                 { setErr("새 비밀번호를 6자리 이상으로 설정해 주세요."); return; }
-    if(newPw !== newPw2)                 { setErr("새 비밀번호가 일치하지 않습니다."); return; }
-    if(newPw === curPw)                  { setErr("현재 비밀번호와 동일합니다. 다른 비밀번호를 사용하세요."); return; }
+    if(curPw !== getTeacherPw())  { setErr("현재 비밀번호가 틀렸습니다."); return; }
+    if(newPw.length < 6)           { setErr("새 비밀번호를 6자리 이상으로 설정해 주세요."); return; }
+    if(newPw !== newPw2)           { setErr("새 비밀번호가 일치하지 않습니다."); return; }
+    if(newPw === curPw)            { setErr("현재 비밀번호와 동일합니다."); return; }
     setTeacherPw(newPw);
     setCurPw(""); setNewPw(""); setNewPw2(""); setDone(true);
-    notify("비밀번호가 변경되었습니다. 다시 로그인해 주세요.");
+    notify("비밀번호가 변경되었습니다.");
     setTimeout(()=>onLogout(), 2000);
   };
 
@@ -829,19 +803,15 @@ function TeacherSettings({notify, onLogout}) {
           <>
             <span style={LBL}>현재 비밀번호</span>
             <input type="password" placeholder="현재 비밀번호" value={curPw} onChange={e=>setCurPw(e.target.value)} style={INP}/>
-
             <span style={LBL}>새 비밀번호 <span style={{color:"#B0BAD0",fontWeight:400}}>(6자리 이상)</span></span>
             <input type="password" placeholder="새 비밀번호" value={newPw} onChange={e=>setNewPw(e.target.value)} style={INP}/>
-
             <span style={LBL}>새 비밀번호 확인</span>
             <input type="password" placeholder="새 비밀번호 다시 입력" value={newPw2} onChange={e=>setNewPw2(e.target.value)} style={INP}/>
-
             {err && (
               <div style={{background:"#FFF5F5",border:"1px solid #FCA5A5",borderRadius:10,padding:"10px 14px",fontSize:13,color:"#B91C1C",marginTop:8}}>
                 ⚠️ {err}
               </div>
             )}
-
             <button onClick={change}
               style={{width:"100%",marginTop:20,padding:15,borderRadius:14,background:"linear-gradient(135deg,#1A1F3D,#2D3561)",color:"#fff",border:"none",fontSize:15,fontWeight:700,cursor:"pointer"}}>
               비밀번호 변경
@@ -850,12 +820,10 @@ function TeacherSettings({notify, onLogout}) {
         )}
       </div>
 
-      {/* 안내 */}
       <div style={{marginTop:16,background:"#FFFBEB",border:"1.5px solid #FDE68A",borderRadius:14,padding:"14px 16px",display:"flex",gap:10}}>
         <span style={{fontSize:18,flexShrink:0}}>💡</span>
         <p style={{margin:0,fontSize:13,color:"#78600A",lineHeight:1.6}}>
           비밀번호 변경 후 자동 로그아웃되며, 새 비밀번호로 다시 로그인하시면 됩니다.
-          비밀번호는 이 기기의 브라우저에 저장됩니다.
         </p>
       </div>
     </div>
@@ -878,7 +846,7 @@ function Sec({label,children}) {
 
 function Filters({fg,setFg,fc,setFc,ft,setFt}) {
   return (
-    <div style={{display:"flex",gap:10,flexWrap:"wrap",marginBottom:16}}>
+    <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:16}}>
       <select value={fg} onChange={e=>setFg(e.target.value)} style={SEL}>
         <option>전체</option>{GRADES.map(g=><option key={g}>{g}</option>)}
       </select>
@@ -894,23 +862,16 @@ function Filters({fg,setFg,fc,setFc,ft,setFt}) {
   );
 }
 
-function RecordCard({r,showStudent}) {
-  const it=getIT(r.inputType); const c=getCat(r.inputType,r.category);
-  return (
-    <div style={{background:"#fff",borderRadius:16,padding:"16px 18px",marginBottom:12,borderLeft:`4px solid ${it?.color||"#ccc"}`,boxShadow:"0 2px 8px rgba(0,0,0,0.05)"}}>
-      <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",marginBottom:8}}>
-        {showStudent&&<span style={{background:"#F0F2FA",color:"#1A1F3D",borderRadius:20,padding:"3px 10px",fontSize:12,fontWeight:700}}>{r.grade} {r.cls} {r.num}번 {r.studentName}</span>}
-        <span style={{background:it?.color+"20",color:it?.color,borderRadius:20,padding:"3px 10px",fontSize:12,fontWeight:700}}>{it?.emoji} {it?.short}</span>
-        <span style={{background:"#F0F2FA",color:"#5B8DD9",borderRadius:20,padding:"3px 10px",fontSize:12}}>{c?.emoji} {c?.label}</span>
-        <span style={{color:"#B0BAD0",fontSize:12,marginLeft:"auto"}}>{r.date}</span>
-      </div>
-      <p style={{fontSize:14,color:"#3A4060",lineHeight:1.7,margin:0}}>{r.content}</p>
-    </div>
-  );
-}
-
 function Empty() {
   return <div style={{textAlign:"center",padding:"50px 0",color:"#B0BAD0"}}><div style={{fontSize:36,marginBottom:10}}>📭</div>해당 조건의 기록이 없습니다.</div>;
+}
+
+function getDayLabel(dateStr) {
+  const days = ["일요일","월요일","화요일","수요일","목요일","금요일","토요일"];
+  try {
+    const d = new Date(dateStr);
+    return days[d.getDay()];
+  } catch { return ""; }
 }
 
 ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
